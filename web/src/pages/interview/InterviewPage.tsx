@@ -192,6 +192,15 @@ export default function InterviewPage() {
     }
   }, [fatalError, stopCapture, stopPlayback]);
 
+  // Interview finished (server-side wrap-up or page reload after end) —
+  // release the mic so the browser stops recording.
+  useEffect(() => {
+    if (interviewState === "complete") {
+      stopCapture();
+      stopPlayback();
+    }
+  }, [interviewState, stopCapture, stopPlayback]);
+
   const toggleMic = useCallback(() => {
     if (micMutedRef.current) {
       micMutedRef.current = false;

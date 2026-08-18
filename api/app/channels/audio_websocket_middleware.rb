@@ -716,6 +716,8 @@ class AudioWebSocketMiddleware
     state.sent_time_warnings.add(key)
   end
 
+  # Phrases that unambiguously close the interview — they reference the session
+  # ending and cannot plausibly appear inside a probing question mid-interview.
   CLOSING_PHRASES = [
     # English
     'you\'ll hear back from the team',
@@ -725,20 +727,40 @@ class AudioWebSocketMiddleware
     'that concludes our interview',
     'that\'s all for today',
     'good luck',
+    'goodbye',
+    'take care',
     # Indonesian — formal (Anda) and informal (kamu), partial matches cover variations
     'akan mendengar kabar',           # covers "Anda/kamu akan mendengar kabar dari tim / selanjutnya"
-    'terima kasih atas waktu',        # covers "waktumu", "waktunya", "waktu Anda"
+    'akan menghubungi',               # "tim kami akan menghubungi Anda kembali"
+    'terima kasih atas waktu',        # covers "waktumu", "waktunya", "waktu Anda" — always session-final
     'terima kasih banyak atas waktu',
     'semoga sukses',
+    'sukses selalu',
     'sampai jumpa',
     'sampai bertemu lagi',
+    'menyempatkan waktu',             # "sudah menyempatkan waktu untuk ngobrol hari ini"
     'sesi wawancara ini telah selesai',
-    'wawancara kita sudah selesai'
+    'wawancara kita sudah selesai',
+    'sesi wawancara selesai'
   ].freeze
+
+  # Gratitude words — only count as a closing when the turn ALSO references the
+  # session ("hari ini", "sesi", "wawancara", "kabar", "tim"), so mid-interview
+  # thanks like "Terima kasih atas penjelasannya. Itu membantu." are NOT closings.
+  CLOSING_GRATITUDE = %w[terima kasih terimakasih thank you thanks].freeze
+  SESSION_REFERENCE = %w[hari ini sesi wawancara interview kabar tim].freeze
 
   def ai_closing_detected?(text)
     downcased = text.downcase
-    CLOSING_PHRASES.any? { |phrase| downcased.include?(phrase) }
+    return true if CLOSING_PHRASES.any? { |phrase| downcased.include?(phrase) }
+
+    # Heuristic: probing turns end with "?" by interview design. A turn that does
+    # not ask a question AND thanks the candidate for the session (gratitude +
+    # session reference) is a closing even if worded differently.
+    return false if text.rstrip.end_with?('?')
+
+    CLOSING_GRATITUDE.any? { |token| downcased.include?(token) } &&
+      SESSION_REFERENCE.any? { |token| downcased.include?(token) }
   end
 
   def authenticate_and_load(env, session_id)
