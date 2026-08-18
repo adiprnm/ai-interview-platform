@@ -21,7 +21,7 @@ import { useAudioPlayback } from "@/hooks/useAudioPlayback";
 import { useAudioWebSocket } from "@/hooks/useAudioWebSocket";
 import { sessionsApi } from "@/services/sessions";
 import HardwareCheck from "@/components/HardwareCheck";
-import { CheckCircle, Mic, MicOff } from "lucide-react";
+import { CheckCircle, Loader2, Mic, MicOff } from "lucide-react";
 import type { CandidateInfo, InterviewState, InterviewSpeaker, TranscriptTurn } from "@/types";
 
 export default function InterviewPage() {
@@ -260,6 +260,19 @@ export default function InterviewPage() {
           <Button className="w-full" size="lg" onClick={handleConsent} disabled={consentLoading}>
             {consentLoading ? "Saving..." : "I consent — continue"}
           </Button>
+        </div>
+      );
+    }
+
+    // Never run browser/hardware checks until the session info has loaded.
+    // The HardwareCheck component fires camera/mic/speed checks on mount; if it
+    // rendered while candidateInfo is still null it would probe the browser
+    // before the candidate has given (or even seen the) consent.
+    if (!candidateInfo) {
+      return (
+        <div className="max-w-xl mx-auto px-4 py-16 text-center space-y-3">
+          <Loader2 className="h-7 w-7 animate-spin text-primary mx-auto" />
+          <p className="text-sm text-muted-foreground">Loading your interview...</p>
         </div>
       );
     }
