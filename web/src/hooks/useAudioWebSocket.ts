@@ -15,6 +15,10 @@ interface UseAudioWebSocketOptions {
 
 const RECONNECT_DELAYS = [1000, 2000, 4000];
 
+// Liveness heartbeat interval — the backend uses it to tell an abandoned session
+// (browser gone, no reconnect) from one that is merely reconnecting on another page.
+const PING_INTERVAL_MS = 30_000;
+
 export function useAudioWebSocket({
   sessionId,
   token,
@@ -28,6 +32,7 @@ export function useAudioWebSocket({
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionEndedRef = useRef(false);
   const [connectionState, setConnectionState] = useState<"disconnected" | "connecting" | "connected">(
     "disconnected"
@@ -49,6 +54,12 @@ export function useAudioWebSocket({
       setConnectionState("connected");
       reconnectAttemptsRef.current = 0;
       if (token) ws.send(JSON.stringify({ type: "auth", token }));
+      if (pingTimerRef.current) clearInterval(pingTimerRef.current);
+      pingTimerRef.current = setInterval(() => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: "ping" }));
+        }
+      }, PING_INTERVAL_MS);
     };
 
     // Only signal AI speaking once per turn (first binary chunk).
@@ -134,6 +145,10 @@ export function useAudioWebSocket({
 
     ws.onclose = () => {
       setConnectionState("disconnected");
+      if (pingTimerRef.current) {
+        clearInterval(pingTimerRef.current);
+        pingTimerRef.current = null;
+      }
       if (sessionEndedRef.current) return; // session ended cleanly — do not reconnect
       const attempt = reconnectAttemptsRef.current;
       if (attempt < RECONNECT_DELAYS.length) {
@@ -163,6 +178,10 @@ export function useAudioWebSocket({
 
   const disconnect = useCallback(() => {
     if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+    if (pingTimerRef.current) {
+      clearInterval(pingTimerRef.current);
+      pingTimerRef.current = null;
+    }
     reconnectAttemptsRef.current = RECONNECT_DELAYS.length; // prevent reconnect
     wsRef.current?.close();
   }, []);
@@ -170,6 +189,7 @@ export function useAudioWebSocket({
   useEffect(() => {
     return () => {
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      if (pingTimerRef.current) clearInterval(pingTimerRef.current);
       wsRef.current?.close();
     };
   }, []);

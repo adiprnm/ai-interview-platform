@@ -43,6 +43,10 @@ export default function InterviewPage() {
   const [micMuted, setMicMuted] = useState(false);
   const micMutedRef = useRef(false);
   const [fatalError, setFatalError] = useState<string | null>(null);
+  // Load-time state: the session was already ended with end_reason=error (candidate
+  // abandoned it and the grace period expired). Unlike a runtime error there is nothing
+  // to retry — show a terminal message instead of the retry screen.
+  const [sessionEndedWithError, setSessionEndedWithError] = useState(false);
 
   // Fetch candidate info
   const loadCandidateInfo = useCallback(async () => {
@@ -56,8 +60,9 @@ export default function InterviewPage() {
       setConsentGiven(res.data.consent_recorded ?? false);
       if (res.data.session_status === "ended") {
         // Ended because of a server error — never show the fake "Interview Complete".
+        // This is terminal (grace period expired, session can't be resumed).
         if (res.data.end_reason === "error") {
-          setFatalError("The interview service encountered a problem and could not finish the session.");
+          setSessionEndedWithError(true);
         } else {
           setInterviewState("complete");
         }
@@ -234,6 +239,15 @@ export default function InterviewPage() {
     setInterviewState("complete");
   }, [stopCapture, stopPlayback, sendJson, disconnect]);
 
+  // Server-side error → reconnect in place. The backend keeps the session active on
+  // its failures (server_cut), so a fresh connection resumes from the last discussion
+  // via the resumption token — no full page reload, no re-consent, no re-check.
+  const retryAfterError = useCallback(() => {
+    setFatalError(null);
+    setSpeaker(null);
+    startInterview();
+  }, [startInterview]);
+
   const wsConnectionStatus =
     interviewState === "reconnecting"
       ? connectionLostLong ? "lost" : "reconnecting"
@@ -242,6 +256,19 @@ export default function InterviewPage() {
       : "reconnecting";
 
   // Server-side error — the interview did NOT end. Show an error, not the complete screen.
+  if (sessionEndedWithError) {
+    return (
+      <div className="max-w-xl mx-auto px-4 py-16 text-center space-y-4">
+        <div className="text-4xl">⚠️</div>
+        <h2 className="text-xl font-semibold">Interview could not be completed</h2>
+        <p className="text-sm text-muted-foreground">
+          There was a problem on our side and this session could not be finished.
+          Please contact the interviewer — they can start a new interview for you.
+        </p>
+      </div>
+    );
+  }
+
   if (fatalError) {
     return (
       <div className="max-w-xl mx-auto px-4 py-16 text-center space-y-4">
@@ -249,10 +276,10 @@ export default function InterviewPage() {
         <h2 className="text-xl font-semibold">Something went wrong</h2>
         <p className="text-sm text-muted-foreground">{fatalError}</p>
         <p className="text-xs text-muted-foreground">
-          Your interview has not ended. Please try again — your answers so far are saved.
-          If the problem persists, contact the interviewer.
+          There&apos;s a problem on our side. Your interview is not over — when you retry,
+          you&apos;ll continue from where you left off. Your answers so far are saved.
         </p>
-        <Button size="lg" onClick={() => window.location.reload()}>
+        <Button size="lg" onClick={retryAfterError}>
           Try again
         </Button>
       </div>

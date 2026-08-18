@@ -10,6 +10,7 @@ class AudioWebSocketMiddleware
   MAX_RECONNECT_ATTEMPTS = 3
   RECONNECT_BACKOFF = [1, 2, 4].freeze
   BROWSER_GRACE_PERIOD = 120 # seconds to keep Gemini alive after browser disconnects
+  LIVENESS_TTL = 90 # seconds; must exceed the frontend ping interval (30s)
   PROACTIVE_RECONNECT_AFTER = ENV.fetch('PROACTIVE_RECONNECT_AFTER', 510).to_i
   PROACTIVE_RECONNECT_JITTER = 30  # randomise to avoid thundering herd
 
@@ -56,9 +57,14 @@ class AudioWebSocketMiddleware
     end
 
     state.session = session
+    # A fresh browser connection supersedes any previous one (possibly on another
+    # Puma worker). Touching liveness here stops the old connection's grace timer
+    # from error-ending a session that is being actively resumed.
+    touch_liveness(session.id)
     connect_to_gemini(browser_ws, state)
   rescue StandardError => e
     Rails.logger.error("[AudioWS] Exception in on:open: #{e.class}: #{e.message}\n#{e.backtrace.first(5).join("\n")}")
+    state.server_cut = true
     browser_ws.close
   end
 
@@ -95,6 +101,11 @@ class AudioWebSocketMiddleware
     state.browser_disconnected_at = Time.current
     state.proactive_reconnect_timer&.cancel
 
+    # Server-initiated cut (Gemini failure, config error): the candidate did not
+    # abandon the interview. Do NOT arm the error-end timer — the session stays
+    # active and resumable so the candidate can restart whenever they like.
+    return if state.server_cut
+
     # Keep Gemini alive during grace period in case candidate reconnects via page refresh.
     schedule_graceful_end(browser_ws, state)
   end
@@ -107,6 +118,7 @@ class AudioWebSocketMiddleware
     unless session.assessment.system_prompt.present?
       send_json(browser_ws, type: 'error', code: 'no_system_prompt',
                             message: 'Assessment configuration is incomplete.', recoverable: false)
+      state.server_cut = true
       browser_ws.close
       return
     end
@@ -115,6 +127,7 @@ class AudioWebSocketMiddleware
     unless session.consent_recorded?
       send_json(browser_ws, type: 'error', code: 'consent_required',
                             message: 'Consent is required before the interview can begin.', recoverable: true)
+      state.server_cut = true
       browser_ws.close
       return
     end
@@ -340,12 +353,17 @@ class AudioWebSocketMiddleware
         send_json(browser_ws, type: 'speaker_changed', speaker: 'candidate')
       else
         Rails.logger.info("[AudioWS] Gemini ready — sending session_started for session #{session.id}")
+        send_json(browser_ws, type: 'session_started', session_id: session.id)
         unless session.gemini_resumption_token.present?
+          # Fresh start — the AI speaks first; the mic stays muted until the model turn ends.
           state.model_speaking = true
           send_json(browser_ws, type: 'speaker_changed', speaker: 'ai')
           state.gemini_client.trigger_opening
+        else
+          # Resuming a prior session — no opening line. Unmute the mic so the candidate
+          # can continue from where the discussion left off.
+          send_json(browser_ws, type: 'speaker_changed', speaker: 'candidate')
         end
-        send_json(browser_ws, type: 'session_started', session_id: session.id)
       end
 
       schedule_proactive_reconnect(browser_ws, state)
@@ -393,10 +411,11 @@ class AudioWebSocketMiddleware
     else
       Rails.logger.error("[AudioWS] Gemini reconnection failed after #{MAX_RECONNECT_ATTEMPTS} attempts")
       # Do NOT end the session on a server-side failure — that would mark the interview as complete.
-      # Leave it active so the candidate can retry (page reload reconnects); the 120s grace timer
-      # after the browser close ends it only if the candidate never returns.
+      # Leave it active and resumable: the candidate gets a clear "problem on our side" message,
+      # and their restart resumes from the last discussion via the resumption token.
+      state.server_cut = true
       send_json(browser_ws, type: 'error', code: 'gemini_unavailable',
-                            message: 'The interview service is having trouble. Please wait a moment and try again.',
+                            message: "We're experiencing a problem on our side. Please try again in a moment.",
                             recoverable: false)
       browser_ws.close
     end
@@ -427,9 +446,14 @@ class AudioWebSocketMiddleware
   end
 
   def handle_browser_message(data, browser_ws, state)
+    touch_liveness(state.session.id) if state.session
+
     message = JSON.parse(data)
 
     case message['type']
+    when 'ping'
+      # Liveness heartbeat from the frontend (30s interval) — keeps the grace
+      # timer from error-ending a session with a live browser connection.
     when 'debug_force_reconnect'
       if Rails.env.development?
         Rails.logger.warn("[AudioWS] DEBUG: forcing Gemini disconnect for session #{state.session&.id}")
@@ -509,13 +533,16 @@ class AudioWebSocketMiddleware
   end
 
   # Cancellable EM timer (vs Thread.new+sleep) — releases on session end without holding a thread for 2min.
+  # Only ends the session when the candidate is truly gone: not ended yet AND no live browser
+  # connection has touched the liveness key for the grace period (a reload on another Puma worker
+  # keeps the key fresh, so an old connection's timer never kills a resumed interview).
   def schedule_graceful_end(browser_ws, state)
     return unless state.session
 
     state.graceful_end_timer = EM::Timer.new(BROWSER_GRACE_PERIOD) do
       Thread.new do
         ActiveRecord::Base.connection_pool.with_connection do
-          next if state.session.reload.ended?
+          next unless grace_end_due?(state.session)
 
           Rails.logger.info("[AudioWS] Grace period expired — ending session #{state.session.id}")
           Sessions::EndHandler.new(state.session).call(reason: 'error')
@@ -525,6 +552,31 @@ class AudioWebSocketMiddleware
         Rails.logger.error("[AudioWS] Thread crashed (graceful end): #{e.class}: #{e.message}")
       end
     end
+  end
+
+  # A session is auto-ended only if it is not already ended AND the candidate has no
+  # live browser connection (liveness key touched by the frontend ping / connection open).
+  def grace_end_due?(session)
+    return false if session.reload.ended?
+    return false if live_session?(session.id)
+
+    true
+  end
+
+  # Cross-worker liveness: the browser pings every 30s (and on every WS open). A reload or
+  # retry on any Puma worker refreshes the key, so a stale grace timer from another worker
+  # cannot end a session that is being actively resumed.
+  def touch_liveness(session_id)
+    Redis.new(url: ENV.fetch('REDIS_URL', 'redis://localhost:6379/1')).setex("audio_live:#{session_id}", LIVENESS_TTL, '1')
+  rescue StandardError => e
+    Rails.logger.error("[AudioWS] Liveness touch failed for session #{session_id}: #{e.message}")
+  end
+
+  def live_session?(session_id)
+    Redis.new(url: ENV.fetch('REDIS_URL', 'redis://localhost:6379/1')).exists("audio_live:#{session_id}")
+  rescue StandardError => e
+    Rails.logger.error("[AudioWS] Liveness check failed for session #{session_id}: #{e.message}")
+    true # fail-safe: if we can't tell, don't destroy a possibly-live session
   end
 
   # Sends session_ended then closes both connections; 300ms delay lets the frontend process the JSON
@@ -816,7 +868,7 @@ class AudioWebSocketMiddleware
                   :graceful_end_timer, :time_ceiling_timer,
                   :coverage_end_timer, :coverage_pending,
                   :last_ai_turn_ends_with_question, :wrap_up_injected,
-                  :waiting_for_candidate_response
+                  :waiting_for_candidate_response, :server_cut
 
     def initialize
       @turn_counter = 0
@@ -826,6 +878,7 @@ class AudioWebSocketMiddleware
       @wrap_up_injected = false
       @last_ai_turn_ends_with_question = false
       @waiting_for_candidate_response = false
+      @server_cut = false
       @sent_time_warnings = Set.new
     end
 
