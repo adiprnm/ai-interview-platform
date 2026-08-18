@@ -43,6 +43,9 @@ export default function InterviewPage() {
   const [micMuted, setMicMuted] = useState(false);
   const micMutedRef = useRef(false);
   const [fatalError, setFatalError] = useState<string | null>(null);
+  // True only once the AI audio queue has actually drained after preparing_to_end,
+  // so "Wrapping up..." never appears while the AI is still talking.
+  const [wrapUpShown, setWrapUpShown] = useState(false);
   // Load-time state: the session was already ended with end_reason=error (candidate
   // abandoned it and the grace period expired). Unlike a runtime error there is nothing
   // to retry — show a terminal message instead of the retry screen.
@@ -99,13 +102,19 @@ export default function InterviewPage() {
 
     if (state === "draining_audio") {
       // Mute mic, stop sending — wait for audio queue to drain then call audio_complete
+      setWrapUpShown(false);
       muteRef.current?.();
       audioCompleteCalledRef.current = false;
       // Safety timeout: call audio_complete after 10s even if drain never fires
       audioCompleteSafetyTimerRef.current = setTimeout(() => {
+        setWrapUpShown(true);
         callAudioComplete();
       }, 10_000);
-      waitForDrain(() => callAudioComplete());
+      // Only show "Wrapping up..." once the AI has actually finished speaking
+      waitForDrain(() => {
+        setWrapUpShown(true);
+        callAudioComplete();
+      });
       return;
     }
 
@@ -446,7 +455,7 @@ export default function InterviewPage() {
       <div className="flex-1 flex flex-col items-center justify-center gap-6 py-8">
         {interviewState === "connecting" ? (
           <div className="text-sm text-muted-foreground animate-pulse">Connecting...</div>
-        ) : interviewState === "draining_audio" ? (
+        ) : interviewState === "draining_audio" && wrapUpShown ? (
           <div className="flex flex-col items-center gap-2 text-center">
             <VoiceBars active={true} label="AI speaking" variant="ai" />
             <p className="text-xs text-muted-foreground">Wrapping up...</p>
