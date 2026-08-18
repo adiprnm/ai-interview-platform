@@ -127,13 +127,18 @@ export interface VacancySkill {
 
 export type SkillComparisonResult = "match" | "gap" | "exceed" | "not_assessed";
 
+// Contract mirrors api/app/services/fit_gap/engine.rb exactly.
+// NOTE: the backend sends expected_level, NOT required_level — keep these in sync.
 export interface SkillComparison {
   skill_label: string;
-  required_level: number;
-  candidate_level?: number;
+  skill_id?: string;
+  expected_level: number;
+  candidate_level?: number | null;
   result: SkillComparisonResult;
-  delta?: number;
-  is_override?: boolean;
+  delta?: number | null;
+  confidence?: "high" | "medium" | "low" | null;
+  is_override: boolean;
+  low_confidence_flag: boolean;
 }
 
 export interface FitGapReport {
@@ -144,6 +149,8 @@ export interface FitGapReport {
   culture_narrative: string;
   overall_narrative: string;
   generated_at: string;
+  generation_status: "pending" | "generating" | "complete" | "failed";
+  generation_error?: string | null;
 }
 
 export interface SkillTaxonomy {
@@ -164,6 +171,8 @@ export interface CandidateInfo {
   role_title: string;
   time_limit_min: number;
   session_status: string;
+  requires_consent?: boolean;
+  consent_recorded?: boolean;
 }
 
 export interface PaginationMeta {

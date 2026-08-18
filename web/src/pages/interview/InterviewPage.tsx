@@ -28,6 +28,10 @@ export default function InterviewPage() {
   const { token } = useParams<{ token: string }>();
   const [candidateInfo, setCandidateInfo] = useState<CandidateInfo | null>(null);
   const [sessionId, setSessionId] = useState<number | null>(null);
+  const [infoError, setInfoError] = useState(false);
+  const [consentGiven, setConsentGiven] = useState(false);
+  const [consentLoading, setConsentLoading] = useState(false);
+  const [consentError, setConsentError] = useState(false);
   const [interviewState, setInterviewState] = useState<InterviewState>("idle");
   const [speaker, setSpeaker] = useState<InterviewSpeaker>(null);
   const [transcript, setTranscript] = useState<Pick<TranscriptTurn, "speaker" | "text">[]>([]);
@@ -40,15 +44,38 @@ export default function InterviewPage() {
   const micMutedRef = useRef(false);
 
   // Fetch candidate info
-  useEffect(() => {
+  const loadCandidateInfo = useCallback(async () => {
     if (!token) return;
-    sessionsApi.getCandidateInfo(token)
-      .then((res) => {
-        setCandidateInfo(res.data);
-        setSessionId(res.data.session_id);
-        if (res.data.session_status === "ended") setInterviewState("complete");
-      })
-      .catch(() => setInterviewState("complete"));
+    setInfoError(false);
+    setCandidateInfo(null);
+    try {
+      const res = await sessionsApi.getCandidateInfo(token);
+      setCandidateInfo(res.data);
+      setSessionId(res.data.session_id);
+      setConsentGiven(res.data.consent_recorded ?? false);
+      if (res.data.session_status === "ended") setInterviewState("complete");
+    } catch {
+      // A network failure is NOT a successful interview — show a retry screen.
+      setInfoError(true);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    loadCandidateInfo();
+  }, [loadCandidateInfo]);
+
+  const handleConsent = useCallback(async () => {
+    if (!token) return;
+    setConsentLoading(true);
+    setConsentError(false);
+    try {
+      await sessionsApi.recordConsent(token);
+      setConsentGiven(true);
+    } catch {
+      setConsentError(true);
+    } finally {
+      setConsentLoading(false);
+    }
   }, [token]);
 
   const muteRef = useRef<(() => void) | null>(null);
@@ -189,6 +216,54 @@ export default function InterviewPage() {
 
   // ── State A: Pre-start ──────────────────────────────────────────────────
   if (interviewState === "idle") {
+    // Candidate info failed to load — this is NOT a completed interview.
+    if (infoError) {
+      return (
+        <div className="max-w-xl mx-auto px-4 py-16 text-center space-y-4">
+          <div className="text-4xl">😕</div>
+          <h2 className="text-xl font-semibold">Could not load your interview</h2>
+          <p className="text-sm text-muted-foreground">
+            We couldn't reach the interview service. Check your connection and try again.
+          </p>
+          <Button size="lg" onClick={loadCandidateInfo}>
+            Retry
+          </Button>
+        </div>
+      );
+    }
+
+    // UU PDP: consent is recorded before any audio capture can start.
+    if (candidateInfo?.requires_consent && !consentGiven) {
+      return (
+        <div className="max-w-xl mx-auto px-4 py-8 space-y-6">
+          <div className="text-center space-y-1">
+            <h1 className="text-xl font-semibold">{candidateInfo.role_title}</h1>
+            <p className="text-sm text-muted-foreground">{candidateInfo.time_limit_min} minutes</p>
+          </div>
+          <div className="bg-muted/50 rounded-lg p-5 space-y-3 text-sm">
+            <p className="font-medium">Before we begin, please review how your data is used:</p>
+            <ul className="space-y-1.5 text-muted-foreground list-disc pl-5">
+              <li>This interview is recorded and transcribed (audio + text).</li>
+              <li>Your responses are analyzed to assess your skills for this role.</li>
+              <li>The recording and transcript are shared only with the hiring team for this position.</li>
+              <li>Data is kept only as long as needed for the hiring decision and deleted on request.</li>
+            </ul>
+            <p className="text-muted-foreground">
+              By continuing you consent to this processing in accordance with applicable data protection law (UU PDP).
+            </p>
+          </div>
+          {consentError && (
+            <p className="text-sm text-destructive">
+              Could not record your consent. Please try again.
+            </p>
+          )}
+          <Button className="w-full" size="lg" onClick={handleConsent} disabled={consentLoading}>
+            {consentLoading ? "Saving..." : "I consent — continue"}
+          </Button>
+        </div>
+      );
+    }
+
     return (
       <div className="max-w-xl mx-auto px-4 py-8 space-y-6">
         <div className="text-center space-y-1">

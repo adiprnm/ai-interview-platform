@@ -70,7 +70,9 @@ export function useAudioWebSocket({
             case "transcription":
             case "transcript":
               if (msg.speaker && msg.text) {
-                onTranscript({ speaker: msg.speaker === "candidate" ? "candidate" : "assessor", text: msg.text });
+                // Backend speaks a candidate|ai contract; keep it verbatim so
+                // TranscriptBubble renders "You"/"AI" instead of a wrong label.
+                onTranscript({ speaker: msg.speaker, text: msg.text });
               }
               break;
             case "speaker_changed":
