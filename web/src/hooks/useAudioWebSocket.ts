@@ -10,6 +10,7 @@ interface UseAudioWebSocketOptions {
   onStateChange: (state: InterviewState) => void;
   onSpeakerChange: (speaker: InterviewSpeaker) => void;
   onReconnected?: () => void;
+  onError?: (message: string) => void;
 }
 
 const RECONNECT_DELAYS = [1000, 2000, 4000];
@@ -22,6 +23,7 @@ export function useAudioWebSocket({
   onStateChange,
   onSpeakerChange,
   onReconnected,
+  onError,
 }: UseAudioWebSocketOptions) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptsRef = useRef(0);
@@ -102,10 +104,22 @@ export function useAudioWebSocket({
             case "session_ended":
               sessionEndedRef.current = true;
               reconnectAttemptsRef.current = RECONNECT_DELAYS.length; // suppress reconnect
-              onStateChange("complete");
+              // Session ended due to a server error — show the error, never the fake
+              // "Interview Complete" screen (covers both old and new backend versions).
+              if (msg.reason === "error") {
+                onError?.(msg.message ?? "The interview service encountered a problem. Please contact the interviewer.");
+              } else {
+                onStateChange("complete");
+              }
               break;
             case "error":
-              if (!msg.recoverable) onStateChange("complete");
+              // Server-side failure — do NOT mark the interview complete. Show an error
+              // screen instead; the session stays active so the candidate can retry.
+              if (!msg.recoverable) {
+                sessionEndedRef.current = true; // suppress reconnect churn after close
+                reconnectAttemptsRef.current = RECONNECT_DELAYS.length;
+                onError?.(msg.message ?? "The interview service encountered an error. Please try again.");
+              }
               break;
           }
         } catch {
@@ -129,10 +143,11 @@ export function useAudioWebSocket({
           connect();
         }, RECONNECT_DELAYS[attempt]);
       } else {
-        onStateChange("complete");
+        // Reconnect attempts exhausted — the interview did NOT end cleanly.
+        onError?.("Could not restore the connection. Please check your internet and try again.");
       }
     };
-  }, [sessionId, token, onAudioChunk, onTranscript, onStateChange, onSpeakerChange]);
+  }, [sessionId, token, onAudioChunk, onTranscript, onStateChange, onSpeakerChange, onError]);
 
   const send = useCallback((buffer: ArrayBuffer) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {

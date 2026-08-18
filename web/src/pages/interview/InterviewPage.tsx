@@ -42,6 +42,7 @@ export default function InterviewPage() {
   const connectionLostTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [micMuted, setMicMuted] = useState(false);
   const micMutedRef = useRef(false);
+  const [fatalError, setFatalError] = useState<string | null>(null);
 
   // Fetch candidate info
   const loadCandidateInfo = useCallback(async () => {
@@ -53,7 +54,14 @@ export default function InterviewPage() {
       setCandidateInfo(res.data);
       setSessionId(res.data.session_id);
       setConsentGiven(res.data.consent_recorded ?? false);
-      if (res.data.session_status === "ended") setInterviewState("complete");
+      if (res.data.session_status === "ended") {
+        // Ended because of a server error — never show the fake "Interview Complete".
+        if (res.data.end_reason === "error") {
+          setFatalError("The interview service encountered a problem and could not finish the session.");
+        } else {
+          setInterviewState("complete");
+        }
+      }
     } catch {
       // A network failure is NOT a successful interview — show a retry screen.
       setInfoError(true);
@@ -165,6 +173,8 @@ export default function InterviewPage() {
     onStateChange: handleStateChange,
     onSpeakerChange: handleSpeakerChange,
     onReconnected: handleReconnected,
+    // Server-side error → show the error screen, do not end the interview.
+    onError: (message) => setFatalError(message),
   });
 
   const { start: startCapture, stop: stopCapture, mute, unmute } = useAudioCapture({
@@ -173,6 +183,14 @@ export default function InterviewPage() {
 
   muteRef.current = mute;
   unmuteRef.current = unmute;
+
+  // Release the mic/audio when a fatal server error leaves the ws closed.
+  useEffect(() => {
+    if (fatalError) {
+      stopCapture();
+      stopPlayback();
+    }
+  }, [fatalError, stopCapture, stopPlayback]);
 
   const toggleMic = useCallback(() => {
     if (micMutedRef.current) {
@@ -213,6 +231,24 @@ export default function InterviewPage() {
       : connectionState === "connected"
       ? "connected"
       : "reconnecting";
+
+  // Server-side error — the interview did NOT end. Show an error, not the complete screen.
+  if (fatalError) {
+    return (
+      <div className="max-w-xl mx-auto px-4 py-16 text-center space-y-4">
+        <div className="text-4xl">⚠️</div>
+        <h2 className="text-xl font-semibold">Something went wrong</h2>
+        <p className="text-sm text-muted-foreground">{fatalError}</p>
+        <p className="text-xs text-muted-foreground">
+          Your interview has not ended. Please try again — your answers so far are saved.
+          If the problem persists, contact the interviewer.
+        </p>
+        <Button size="lg" onClick={() => window.location.reload()}>
+          Try again
+        </Button>
+      </div>
+    );
+  }
 
   // ── State A: Pre-start ──────────────────────────────────────────────────
   if (interviewState === "idle") {

@@ -392,9 +392,12 @@ class AudioWebSocketMiddleware
       schedule_gemini_reconnect(browser_ws, state, code)
     else
       Rails.logger.error("[AudioWS] Gemini reconnection failed after #{MAX_RECONNECT_ATTEMPTS} attempts")
-      Sessions::EndHandler.new(state.session).call(reason: 'error')
-      send_json(browser_ws, type: 'session_ended', reason: 'error',
-                            message: 'The session encountered a problem. Please contact the interviewer.')
+      # Do NOT end the session on a server-side failure — that would mark the interview as complete.
+      # Leave it active so the candidate can retry (page reload reconnects); the 120s grace timer
+      # after the browser close ends it only if the candidate never returns.
+      send_json(browser_ws, type: 'error', code: 'gemini_unavailable',
+                            message: 'The interview service is having trouble. Please wait a moment and try again.',
+                            recoverable: false)
       browser_ws.close
     end
   end
