@@ -122,6 +122,11 @@ export interface VacancySkill {
   skill_id?: number;
   skill_label: string;
   expected_level: number;
+  l1_anchor?: string;
+  l2_anchor?: string;
+  l3_anchor?: string;
+  l4_anchor?: string;
+  l5_anchor?: string;
   _destroy?: boolean;
 }
 
