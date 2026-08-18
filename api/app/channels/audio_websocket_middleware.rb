@@ -111,6 +111,14 @@ class AudioWebSocketMiddleware
       return
     end
 
+    # UU PDP: refuse to record audio before the candidate has consented.
+    unless session.consent_recorded?
+      send_json(browser_ws, type: 'error', code: 'consent_required',
+                            message: 'Consent is required before the interview can begin.', recoverable: true)
+      browser_ws.close
+      return
+    end
+
     Sessions::StartHandler.new(session).call unless session.active?
 
     state.turn_counter = session.transcript_turns.maximum(:turn_number).to_i
