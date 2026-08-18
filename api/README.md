@@ -28,6 +28,18 @@ Fill in the required values in `config/application.yml`:
 | `REDIS_URL` | e.g. `redis://localhost:6379/1` |
 | `ALLOWED_ORIGINS` | CORS origin for the frontend, e.g. `http://localhost:5173` |
 | `APP_BASE_URL` | Backend base URL, e.g. `http://localhost:3001` |
+| `WEB_APP_BASE_URL` | Frontend origin used for **invite links** (the interview UI lives in the web app), e.g. `http://localhost:5173`. Defaults to `http://localhost:5173`. |
+
+---
+
+## 1b. Run the tests
+
+```bash
+RAILS_ENV=test bin/rails db:create db:schema:load
+bundle exec rspec
+```
+
+Specs stub every Gemini call — no API key or live audio devices are needed.
 
 ---
 
